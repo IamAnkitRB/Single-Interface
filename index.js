@@ -1,15 +1,20 @@
+// Required dependencies
 const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { Readable } = require("stream");
 const hubspot = require("@hubspot/api-client");
-const dotenv = require('dotenv')
+const dotenv = require("dotenv");
+const xlsx = require("xlsx");
 
-dotenv.config()
+// Load environment variables
+dotenv.config();
 
-const ACCESS_KEY = process.env.ACCESS_KEY;
-const SECRET_KEY = process.env.SECRET_KEY;
-const CUSTOM_OBJECT_ID = process.env.CUSTOM_OBJECT_ID;
-const HUBSPOT_ACCESS_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
-const ASSOCIATION_TYPE_ID = process.env.ASSOCIATION_TYPE_ID;
+const {
+  ACCESS_KEY,
+  SECRET_KEY,
+  CUSTOM_OBJECT_ID,
+  HUBSPOT_ACCESS_TOKEN,
+  ASSOCIATION_TYPE_ID,
+} = process.env;
 
 const hubspotClient = new hubspot.Client({
   accessToken: HUBSPOT_ACCESS_TOKEN,
@@ -26,26 +31,42 @@ const s3Client = new S3Client({
 const BUCKET_NAME = "hubspot-si";
 const OBJECT_KEY = "Client Audit Reports with correct dates.csv";
 
-const fetchCsvFromS3 = async () => {
-  try {
-    const command = new GetObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: OBJECT_KEY,
-    });
-    const response = await s3Client.send(command);
-    return response.Body;
-  } catch (error) {
-    console.error("Error fetching CSV from S3:", error);
-    throw error;
-  }
-};
-
+// Helper function
 const chunkArray = (array, chunkSize) => {
   const chunks = [];
   for (let i = 0; i < array.length; i += chunkSize) {
     chunks.push(array.slice(i, i + chunkSize));
   }
   return chunks;
+};
+
+// const fetchCsvFromS3 = async () => {
+//   try {
+//     const command = new GetObjectCommand({
+//       Bucket: BUCKET_NAME,
+//       Key: OBJECT_KEY,
+//     });
+//     const response = await s3Client.send(command);
+//     return response.Body;
+//   } catch (error) {
+//     console.error("Error fetching CSV from S3:", error);
+//     throw error;
+//   }
+// };
+
+const fetchExcelFromLocal = async (filePath) => {
+  try {
+    const workbook = xlsx.readFile(filePath);
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+
+    const jsonData = xlsx.utils.sheet_to_json(worksheet);
+
+    return jsonData;
+  } catch (error) {
+    console.error("Error reading Excel from local:", error);
+    throw error;
+  }
 };
 
 const createBrandsInObjectInBatches = async (customObjectType, batchInput) => {
@@ -182,7 +203,7 @@ const findRecordId = (companyArray, orderCode, orderId) => {
     }
   }
 
-  return "3858867316";
+  return null;
 };
 
 (main = async () => {
@@ -216,8 +237,13 @@ const findRecordId = (companyArray, orderCode, orderId) => {
       }
     } while (response?.data?.length);
 
-    const s3Stream = await fetchCsvFromS3();
-    const s3CsvArray = await processCsvData(Readable.from(s3Stream));
+    const localStream = await fetchExcelFromLocal(
+      "/home/ankit/Desktop/Single-Interface/Client Audit Nov Report 230 clients.xlsx"
+    );
+    // const s3Stream = await fetchCsvFromS3()
+    // const s3CsvArray = await processCsvData(Readable.from(s3Stream));
+
+    const s3CsvArray = localStream;
 
     const companyOrderSet = new Set(
       companyArray.flatMap((item) => [item.order_code, item.order_id])
@@ -241,8 +267,20 @@ const findRecordId = (companyArray, orderCode, orderId) => {
         };
       }),
     };
+
     if (batchInput.inputs.length > 0) {
-      await createCompaniesInBatches(batchInput);
+      const batchSize = 100;
+      const batches = [];
+
+      // Split into batches of size 100
+      for (let i = 0; i < batchInput.inputs.length; i += batchSize) {
+        const batch = batchInput.inputs.slice(i, i + batchSize);
+        batches.push(batch);
+      }
+
+      for (const batch of batches) {
+        await createCompaniesInBatches({ inputs: batch });
+      }
     }
 
     const batchInputForCustomObject = {
@@ -256,7 +294,7 @@ const findRecordId = (companyArray, orderCode, orderId) => {
             types: [
               {
                 associationCategory: "USER_DEFINED",
-                associationTypeId: ASSOCIATION_TYPE_ID,
+                associationTypeId: "19",
               },
             ],
           },
@@ -268,7 +306,7 @@ const findRecordId = (companyArray, orderCode, orderId) => {
       batchInputForCustomObject
     );
 
-    console.log('Items created successfully')
+    console.log("Items created successfully");
   } catch (error) {
     console.error("Error during test:", error);
   }
